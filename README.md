@@ -32,14 +32,16 @@ The pipeline consists of two primary decoupled components:
 
 ```text
 psd/
-├── main.py                  # PSD plotter orchestrator
-├── config.yml               # Scatter configurations
-├── channel_builder.py       # Active station discovery
-├── probability/             # Probability Engine
-│   ├── main.py              # Engine CLI
-│   ├── processing.py        # PDF Aggregation logic
-│   └── ...
-└── psd_summ_results/        # Rendered analysis outputs 
+├── main.py                  # Unified Pipeline Entry Point
+├── src/psd_analysis/        # Core Analysis logic
+│   ├── engine/              # Probability engine logic
+│   ├── plotter/             # Scatter Plot generation
+│   └── common/              # Shared models & discovery
+├── configs/                 # YAML Configuration Files
+├── scripts/                 # Utility scripts (confirm_filters.py)
+└── data/                    # Unified Data Hub
+    ├── probability/         # Raw Engine CSVs & Heatmaps
+    └── outputs/             # Summary Plots & Excel reports
 ```
 </details>
 
@@ -59,13 +61,16 @@ pip install -r requirements.txt
 
 ## Usage Example & Interactive Demo
 
-### 1. The Probability Engine Core
-
-Generate exact period-power percentiles and heatmap visualizations for an individual station:
+Run the full pipeline (engine + plotter) for all active stations:
 
 ```bash
-cd probability/
-python3 main.py --stations BKS --components HHZ HHN HHE --start-year 2025 --end-year 2025
+python3 main.py configs/default_config.yml --run-engine
+```
+
+To only run the engine (compute data) without generating summary plots:
+
+```bash
+python3 main.py --run-engine --skip-plots
 ```
 
 **Heatmap Output** (Probability Distribution with over-plotted noise percentiles):
@@ -73,12 +78,10 @@ python3 main.py --stations BKS --components HHZ HHN HHE --start-year 2025 --end-
 
 *(Output includes a robust `.csv` numerically mapping `period_log10` to requested interval percentiles)*
 
-### 2. Network-Wide PSD Analyzer
-
-Utilizing the YAML configuration (`config.yml`), simply run the orchestrator:
+If you already have pre-computed CSV data in `data/probability/`, you can generate summary plots immediately:
 
 ```bash
-python3 main.py config.yml
+python3 main.py
 ```
 
 This runs the full operational flow, outputting both interactive network-wide HTML graphs and comprehensive Excel matrix reports.
