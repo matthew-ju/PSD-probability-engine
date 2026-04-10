@@ -92,7 +92,11 @@ This runs the full operational flow, outputting both interactive network-wide HT
 
 Network-wide outputs from the Scatter Plot Analyzer feature interactive diagnostic capabilities. Watch the demo below to see dynamic exploration of outliers and sensor metadata natively in the browser:
 
-https://github.com/matthew-ju/seismology-probability-analysis/raw/main/interactive_vis_demo.mp4
+
+
+https://github.com/user-attachments/assets/2f2facc7-f8bc-4789-b8f7-aea51e3cce74
+
+
 
 ---
 
