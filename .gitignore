@@ -16,3 +16,8 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Results
+psd_summ_results/
+probability/BK/
+probability/NC/

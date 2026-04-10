@@ -13,83 +13,85 @@ class ChannelBuilder:
     def __init__(self, cfg: PlotConfig):
         self.cfg = cfg
 
-    def _load_active_hhz_stations(self) -> List[Tuple[str, str]]:
-        '''Return (station, location) pairs for all active HHZ in BK.channel.summary.day.
+    def _load_active_hhz_stations(self) -> List[Tuple[str, str, str]]:
+        '''Return (network, station, location) triplets for all active HHZ in channel.summary.day files.
         "active" channel: End time starts with "3000/01/01,00:00:00"
         '''
-        summary_path = Path("/work/dc6/ftp/pub/doc/BK.info/BK.channel.summary.day")
-        stations: Set[Tuple[str, str]] = set()
-
-        if not summary_path.exists():
-            print(f"Warning: Summary file not found at {summary_path}. Skipping active filter.")
-            return []
-
-        try:
-            with summary_path.open("r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    if not line.strip() or line.startswith("Stat ") or set(line.strip()) == {"-"}:
-                        continue
-                    parts = line.split()
-                    if len(parts) < 7:
-                        continue
-                    stat, net, cha, loc = parts[0], parts[1], parts[2], parts[3]
-                    end_time = parts[6]
-
-                    if net != self.cfg.network:
-                        continue
-                    if not cha.startswith("HHZ"):
-                        continue
-                    if not end_time.startswith("3000/01/01,00:00:00"):
-                        continue
-                    stations.add((stat, loc))
-        except OSError as exc:
-            print(f"COULDN'T READ: {summary_path}: {exc}", file=sys.stderr)
-            return []
-
-        # Ensure only one location per station to avoid duplicate nodes on plot
-        unique_stations: Dict[str, str] = {}
-        for stat, loc in sorted(list(stations)):
-            if stat not in unique_stations:
-                unique_stations[stat] = loc
+        all_active: Set[Tuple[str, str, str]] = set()
         
-        return sorted(list(unique_stations.items()))
+        for network in self.cfg.networks:
+            # Resolve path per network: /work/dc6/ftp/pub/doc/{network}.info/{network}.channel.summary.day
+            summary_path = Path(f"/work/dc6/ftp/pub/doc/{network}.info/{network}.channel.summary.day")
+
+            if not summary_path.exists():
+                print(f"Warning: Summary file not found at {summary_path}. Skipping {network}.")
+                continue
+
+            try:
+                with summary_path.open("r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if not line.strip() or line.startswith("Stat ") or set(line.strip()) == {"-"}:
+                            continue
+                        parts = line.split()
+                        if len(parts) < 7:
+                            continue
+                        stat, net, cha, loc = parts[0], parts[1], parts[2], parts[3]
+                        end_time = parts[6]
+
+                        if net != network:
+                            continue
+                        
+                        # 1. Network-specific blacklists
+                        if (net == "BK" and loc == "S0") or (net == "NC" and loc == "20"):
+                            continue
+
+                        # 2. Only consider active sensors
+                        if not end_time.startswith("3000/01/01,00:00:00"):
+                            continue
+                        
+                        # 3. Discovery: Use any requested channel to identify active (stat, loc) pairs
+                        # Common: HHZ, EHZ, HNZ, etc.
+                        if not any(cha.startswith(comp[:2]) for comp in self.cfg.components):
+                            continue
+                            
+                        all_active.add((network, stat, loc))
+            except OSError as exc:
+                print(f"COULDN'T READ {network}: {summary_path}: {exc}", file=sys.stderr)
+        
+        return sorted(list(all_active))
 
     def build_channels(self) -> List[StationChannel]:
-        active_pairs = self._load_active_hhz_stations()
+        active_triplets = self._load_active_hhz_stations()
 
-        selected_pairs: List[Tuple[str, str]] = []
+        selected_triplets: List[Tuple[str, str, str]] = []
 
         if self.cfg.stations:
             wanted = set(self.cfg.stations)
 
-            if active_pairs:
-                for sta, loc in active_pairs:
-                    if sta in wanted:
-                        selected_pairs.append((sta, loc))
+            for net, sta, loc in active_triplets:
+                if sta in wanted:
+                    selected_triplets.append((net, sta, loc))
 
-                found_stats = {s[0] for s in active_pairs}
-                missing = wanted - found_stats
-                if missing:
-                    print(f"Warning: stations not found in active list: {sorted(missing)}")
-            else:
-                for sta in sorted(wanted):
-                    selected_pairs.append((sta, self.cfg.location))
+            found_stats = {s[1] for s in active_triplets}
+            missing = wanted - found_stats
+            if missing:
+                print(f"Warning: stations not found in any active list: {sorted(missing)}")
         else:
-            selected_pairs = active_pairs
+            selected_triplets = active_triplets
 
-        if not selected_pairs:
+        if not selected_triplets:
             print("No stations selected.", file=sys.stderr)
             return []
 
-        combos = product(selected_pairs, self.cfg.components)
+        combos = product(selected_triplets, self.cfg.components)
         channels: List[StationChannel] = [
             StationChannel(
-                network=self.cfg.network,
+                network=net,
                 station=sta,
                 location=loc,
                 component=comp,
                 base_dir=self.cfg.base_dir,
             )
-            for (sta, loc), comp in combos
+            for (net, sta, loc), comp in combos
         ]
         return channels

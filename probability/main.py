@@ -25,16 +25,16 @@ def main() -> None:
         help="Root path to PDF/STATS (default: DEFAULT_ROOT).",
     )
     parser.add_argument(
-        "--network",
-        type=str,
-        default=config.DEFAULT_NETWORK,
-        help="Network code (default: BK).",
+        "--networks", "--network",
+        nargs="+",
+        default=list(config.DEFAULT_NETWORKS),
+        help="Network codes (default: BK NC).",
     )
     parser.add_argument(
-        "--location",
-        type=str,
-        default=config.DEFAULT_LOCATION,
-        help="Location code (default: 00).",
+        "--locations", "--location",
+        nargs="+",
+        default=list(config.DEFAULT_LOCATIONS),
+        help="Location codes (default: 00 01).",
     )
     parser.add_argument(
         "--stations",
@@ -89,94 +89,88 @@ def main() -> None:
 
     args = parser.parse_args()
     resolver = SeismicPathResolver()
-    s_idx = 0
-    stations = args.stations
-    while s_idx < len(stations):
-        station = stations[s_idx]
-        station_out_dir = Path(station)
-        try:
-            station_out_dir.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            print(f"[ERROR] Could not create directory {station_out_dir}: {e}")
-            s_idx += 1
-            continue
+    script_dir = Path(__file__).parent.resolve()
 
-        c_idx = 0
-        components = args.components
-        while c_idx < len(components):
-            component = components[c_idx]
+    for network in args.networks:
+        for station in args.stations:
+            # Save results inside the probability/ folder to match project structure
+            station_out_dir = script_dir / network / station
+            # Only create directory if we actually find data for this station/network combo
             
-            aggregator = PeriodPowerAggregator()
-            total_files_processed = 0
+            for component in args.components:
+                for location in args.locations:
+                    if (network == "BK" and location == "S0") or (network == "NC" and location == "20"):
+                        continue
+                    aggregator = PeriodPowerAggregator()
+                    total_files_processed = 0
 
-            current_year = args.start_year
-            while current_year <= args.end_year:
-                curr_min_day = args.start_day if current_year == args.start_year else 1
-                curr_max_day = args.end_day if current_year == args.end_year else 366
+                    current_year = args.start_year
+                    while current_year <= args.end_year:
+                        curr_min_day = args.start_day if current_year == args.start_year else 1
+                        curr_max_day = args.end_day if current_year == args.end_year else 366
 
-                try:
-                    station_dir = resolver.resolve(
-                        args.root, args.network, station, args.location, component, current_year
+                        try:
+                            station_dir = resolver.resolve(
+                                args.root, network, station, location, component, current_year
+                            )
+                        except FileNotFoundError:
+                            current_year += 1
+                            continue
+
+                        reader = PdfDirectoryReader(
+                            station_dir,
+                            year=current_year,
+                            start_day=curr_min_day,
+                            end_day=curr_max_day,
+                        )
+
+                        if reader.file_count > 0:
+                            for rec in reader.iter_records():
+                                aggregator.add_record(rec)
+                            total_files_processed += reader.file_count
+                        
+                        current_year += 1
+
+                    if total_files_processed == 0:
+                        continue
+
+                    # Now we know we have data, ensure directory exists
+                    station_out_dir.mkdir(parents=True, exist_ok=True)
+
+                    aggregator.finalize(total_files_processed)
+                    per_period = aggregator.percentiles_all_periods(args.percentiles)
+                    
+                    # Include location in filename and title so sensors are kept separate
+                    base_name = f"{station}.{component}.{location}"
+                    time_tag = f"{args.start_year}.{args.start_day}-{args.end_year}.{args.end_day}"
+                    filename = f"{base_name}.{time_tag}.csv"
+                    out_path = station_out_dir / filename
+                    
+                    plot_limits = {
+                        "xlow": 0.02, "xhigh": 100.0, 
+                        "ylow": -200.0, "yhigh": -50.0
+                    }
+                    title = (f"PSD PDF: {network}.{station}.{location}.{component} "
+                             f"({args.start_year}.{args.start_day:03d} - {args.end_year}.{args.end_day:03d})")
+                    
+                    viz = PdfVisualizer(title, aggregator)
+                    # Plot only p5, p10, and p50 by default
+                    plot_percentiles = [p for p in args.percentiles if p in [0.05, 0.10, 0.50]]
+                    if not plot_percentiles:
+                        plot_percentiles = args.percentiles
+                    
+                    viz.render(plot_percentiles, plot_limits)
+                    
+                    image_name = out_path.with_suffix(".png")
+                    viz.save(str(image_name))
+                    write_percentiles_csv(
+                        out_path,
+                        per_period,
+                        args.percentiles,
+                        total_files=total_files_processed
                     )
-                except FileNotFoundError:
-                    current_year += 1
-                    continue
 
-                reader = PdfDirectoryReader(
-                    station_dir,
-                    year=current_year,
-                    start_day=curr_min_day,
-                    end_day=curr_max_day,
-                )
-
-                if reader.file_count > 0:
-                    for rec in reader.iter_records():
-                        aggregator.add_record(rec)
-                    total_files_processed += reader.file_count
-                
-                current_year += 1
-
-            if total_files_processed == 0:
-                print(f"[WARN] No data found for {station}.{component} across {args.start_year}-{args.end_year}")
-                c_idx += 1
-                continue
-
-            aggregator.finalize(total_files_processed)
-            per_period = aggregator.percentiles_all_periods(args.percentiles)
-            base_name = f"{args.output_prefix}.{station}.{component}"
-            time_tag = f"{args.start_year}.{args.start_day}-{args.end_year}.{args.end_day}"
-            filename = f"{base_name}.{time_tag}.csv"
-            out_path = station_out_dir / filename
-            
-            plot_limits = {
-                "xlow": 0.02, "xhigh": 100.0, 
-                "ylow": -200.0, "yhigh": -50.0
-            }
-            title = (f"PSD PDF: {args.network}.{station}.{args.location}.{component} "
-                     f"({args.start_year}.{args.start_day:03d} - {args.end_year}.{args.end_day:03d})")
-            
-            viz = PdfVisualizer(title, aggregator)
-            # Plot only p5 and p10 by default to clean up the probability distribution plot
-            plot_percentiles = [p for p in args.percentiles if p in [0.05, 0.10]]
-            # Fallback to all requested if p5/p10 are not in the list
-            if not plot_percentiles:
-                plot_percentiles = args.percentiles
-            
-            viz.render(plot_percentiles, plot_limits)
-            
-            image_name = out_path.with_suffix(".png")
-            viz.save(str(image_name))
-            write_percentiles_csv(
-                out_path,
-                per_period,
-                args.percentiles,
-                total_files=total_files_processed
-            )
-
-            print(f"Processed {station}.{component}: {total_files_processed} files. Saved to {station_out_dir}")
-            
-            c_idx += 1
-        s_idx += 1
+                    print(f"Processed {network}.{station}.{location}.{component}: {total_files_processed} files. Saved to {station_out_dir}")
 
 if __name__ == "__main__":
     main()

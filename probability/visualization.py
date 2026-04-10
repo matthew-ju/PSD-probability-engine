@@ -101,7 +101,7 @@ class PdfVisualizer(BasePlotter):
                 periods_seconds, 
                 y_values, 
                 label=label, 
-                linestyle=':', 
+                linestyle='--', 
                 linewidth=1.0
             )
             line.set_path_effects([

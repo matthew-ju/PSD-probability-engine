@@ -19,8 +19,10 @@ class StationChannel:
 
 @dataclass(frozen=True)
 class PSDPoint:
+    network: str
     component: str
     station: str
+    instrument: str
     psd_x: float
     psd_y: float
     file_count: int

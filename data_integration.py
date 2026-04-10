@@ -5,11 +5,11 @@ then reads the output CSV files to extract PSD values at target periods.
 from __future__ import annotations
 
 import csv
-import subprocess
 import sys
+from datetime import datetime
 import numpy as np
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from core_models import PSDPoint, StationChannel
 from config_loader import PlotConfig
@@ -18,53 +18,14 @@ from config_loader import PlotConfig
 PROBABILITY_DIR = Path(__file__).resolve().parent / "probability"
 
 
-class ProbabilityRunner:
-    '''Runs probability/main.py as a subprocess to generate percentile CSVs.'''
-
-    def __init__(self, cfg: PlotConfig):
-        self.cfg = cfg
-        self.prob_main = PROBABILITY_DIR / "main.py"
-
-    def run(self, stations: List[str]) -> None:
-        if not self.prob_main.exists():
-            print(f"ERROR: probability/main.py not found at {self.prob_main}")
-            sys.exit(1)
-
-        pct_args = [str(p) for p in self.cfg.percentiles]
-
-        cmd = [
-            sys.executable, str(self.prob_main),
-            "--root", str(self.cfg.base_dir),
-            "--network", self.cfg.network,
-            "--location", self.cfg.location,
-            "--stations", *stations,
-            "--components", *self.cfg.components,
-            "--start-year", str(self.cfg.start_year),
-            "--start-day", str(self.cfg.start_day),
-            "--end-year", str(self.cfg.end_year),
-            "--end-day", str(self.cfg.end_day),
-            "--percentiles", *pct_args,
-        ]
-
-        print(f"Running probability engine for {len(stations)} stations...")
-        print(f"  Command: {' '.join(cmd[:6])} ...")
-
-        result = subprocess.run(
-            cmd,
-            cwd=str(PROBABILITY_DIR),
-            capture_output=False,
-        )
-
-        if result.returncode != 0:
-            print(f"WARNING: probability engine exited with code {result.returncode}")
-
-
 class CSVReader:
     '''Reads percentile CSV files produced by the probability engine.'''
 
     def __init__(self, cfg: PlotConfig):
         self.cfg = cfg
         self.stat_column = self._resolve_stat_column(cfg.stat)
+        self._instrument_cache: Dict[str, str] = {}
+        self._load_instruments()
 
     def _resolve_stat_column(self, stat: str) -> str:
         '''Convert stat name to CSV column name.
@@ -88,24 +49,80 @@ class CSVReader:
         print(f"  Warning: Unknown stat '{stat}', defaulting to 'p50'")
         return "p50"
 
-    def _find_csv(self, station: str, component: str) -> Optional[Path]:
-        '''Find the percentile CSV for a station+component.'''
-        station_dir = PROBABILITY_DIR / station
+    def _load_instruments(self):
+        '''Load instrument info from .info files for all configured networks.'''
+        cfg_start = datetime.strptime(f"{self.cfg.start_year} {self.cfg.start_day:03d}", "%Y %j")
+        cfg_end = datetime.strptime(f"{self.cfg.end_year} {self.cfg.end_day:03d}", "%Y %j")
+
+        for network in self.cfg.networks:
+            info_file = Path(f"/work/dc6/ftp/pub/doc/{network}.info/{network}.channel.summary.day")
+            if not info_file.exists():
+                print(f"  Warning: Info file not found: {info_file}")
+                continue
+
+            try:
+                with info_file.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) < 14:
+                            continue
+                        
+                        station = parts[0]
+                        net = parts[1]
+                        channel = parts[2]
+                        location = parts[3]
+                        
+                        # Date format: 2023/12/28,17:14:00
+                        try:
+                            row_start = datetime.strptime(parts[5], "%Y/%m/%d,%H:%M:%S")
+                            row_end = datetime.strptime(parts[6], "%Y/%m/%d,%H:%M:%S")
+                        except ValueError:
+                            continue
+
+                        # Overlap check
+                        if (row_start <= cfg_end) and (row_end >= cfg_start):
+                            # Extract instrument (14th column, first part before comma)
+                            instr_full = " ".join(parts[13:]) # Handle spaces in instrument info
+                            instr = instr_full.split(",")[0].strip()
+                            
+                            key = f"{net}.{station}.{location}.{channel}"
+                            self._instrument_cache[key] = instr
+            except Exception as e:
+                print(f"  Error reading info file for {network}: {e}")
+
+    def _get_instrument(self, ch: StationChannel) -> str:
+        key = f"{ch.network}.{ch.station}.{ch.location}.{ch.component}"
+        return self._instrument_cache.get(key, "Unknown")
+
+    def _find_csv(self, network: str, station: str, component: str, location: str) -> Optional[Path]:
+        '''Find the percentile CSV for a station+component. Now tries location-less format first.'''
+        station_dir = PROBABILITY_DIR / network / station
         if not station_dir.is_dir():
             return None
 
         time_tag = f"{self.cfg.start_year}.{self.cfg.start_day}-{self.cfg.end_year}.{self.cfg.end_day}"
-        expected = f"percentiles.{station}.{component}.{time_tag}.csv"
-        csv_path = station_dir / expected
-
+        
+        # 1. Try location-less format (new combined format)
+        expected_new = f"{station}.{component}.{time_tag}.csv"
+        csv_path = station_dir / expected_new
         if csv_path.exists():
             return csv_path
 
-        # Fallback: find any matching CSV
-        pattern = f"percentiles.{station}.{component}.*.csv"
-        matches = sorted(station_dir.glob(pattern))
+        # 2. Try specific location format (legacy/specific)
+        expected_old = f"{station}.{component}.{location}.{time_tag}.csv"
+        csv_path = station_dir / expected_old
+        if csv_path.exists():
+            return csv_path
+
+        # Fallback: find any matching CSV (new format pattern)
+        pattern_new = f"{station}.{component}.*.csv"
+        matches = sorted(station_dir.glob(pattern_new))
         if matches:
-            return matches[-1]  # most recent
+            # Filter matches to avoid picking files with location codes if possible
+            new_matches = [m for m in matches if len(m.name.split(".")) == 5] # sta.comp.start.end.csv
+            if new_matches:
+                return new_matches[-1]
+            return matches[-1]
         return None
 
     def _read_data_from_csv(self, csv_path: Path, target_period: float) -> tuple[float, int]:
@@ -146,9 +163,9 @@ class CSVReader:
         points: List[PSDPoint] = []
 
         for ch in channels:
-            csv_path = self._find_csv(ch.station, ch.component)
+            csv_path = self._find_csv(ch.network, ch.station, ch.component, ch.location)
             if csv_path is None:
-                print(f"  No CSV found for {ch.station}.{ch.component}, skipping")
+                print(f"  No CSV found for {ch.station}.{ch.component}.{ch.location}, skipping")
                 continue
 
             val_x, files_x = self._read_data_from_csv(csv_path, self.cfg.period_x)
@@ -159,8 +176,10 @@ class CSVReader:
                 continue
 
             points.append(PSDPoint(
+                network=ch.network,
                 component=ch.component,
                 station=ch.station,
+                instrument=self._get_instrument(ch),
                 psd_x=val_x,
                 psd_y=val_y,
                 file_count=files_x # Assuming x and y have same file count from same CSV

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from config_loader import load_config, ConfigError
 from channel_builder import ChannelBuilder
-from data_integration import ProbabilityRunner, CSVReader
+from data_integration import CSVReader
 from plotter import ComponentPlotter
 
 
@@ -29,7 +29,7 @@ def main() -> None:
         print(f"Configuration error: {exc}")
         sys.exit(1)
 
-    print(f"Config loaded: {len(cfg.stations)} stations, stat={cfg.stat}")
+    print(f"Config loaded: {len(cfg.stations)} stations, networks={', '.join(cfg.networks)}, stat={cfg.stat}")
     print(f"Time range: {cfg.start_year}.{cfg.start_day} – {cfg.end_year}.{cfg.end_day}")
     print(f"Periods: {cfg.period_x}s vs {cfg.period_y}s")
 
@@ -44,26 +44,29 @@ def main() -> None:
     unique_stations = sorted({ch.station for ch in channels})
     print(f"Active stations: {len(unique_stations)}")
 
-    # Step 2: Run probability engine (generates CSVs)
-    runner = ProbabilityRunner(cfg)
-    runner.run(unique_stations)
-
-    # Step 3: Read CSVs -> PSDPoints
+    # Step 2: Read precomputed CSVs -> PSDPoints
+    print("Reading precomputed probability engine data...")
     reader = CSVReader(cfg)
-    points = reader.build_points(channels)
+    all_points = reader.build_points(channels)
 
-    if not points:
-        print("No PSD points generated. Check probability output.")
+    if not all_points:
+        print(f"No PSD points generated for {cfg.stat}. Check probability output.")
         sys.exit(0)
 
-    print(f"\nGenerated {len(points)} PSD points")
+    # Step 3: Group by network and Plot
+    points_by_net: dict[str, list[PSDPoint]] = {}
+    for p in all_points:
+        points_by_net.setdefault(p.network, []).append(p)
 
-    # Step 4: Plot and save
-    plotter = ComponentPlotter(cfg)
-    plotter.plot(points)
-    plotter.save_excel(points)
+    for net, net_points in points_by_net.items():
+        print(f"\n--- Processing Network: {net} | stat: {cfg.stat} ---")
+        print(f"Generated {len(net_points)} PSD points")
+        
+        plotter = ComponentPlotter(cfg, net)
+        plotter.plot(net_points)
+        plotter.save_excel(net_points)
 
-    print("\nDone. Results saved to psd_results/")
+    print("\nDone. Results saved to psd_summ_results/")
 
 
 if __name__ == "__main__":
